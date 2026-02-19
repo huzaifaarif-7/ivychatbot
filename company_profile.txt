@@ -1,0 +1,49 @@
+Company Profile - INTERNETWORKS
+
+
+Internetworks Services
+1. Artificial Intelligence Solutions
+AI as a Service – Deploy and integrate AI models tailored to business needs. (Tags: AI, Artificial Intelligence, Automation, ML)
+Prompt Engineering – Design and optimize prompts for intelligent workflows. (Tags: AI, NLP, LLMs, Prompt Engineering)
+2. Software Development
+Full Stack Development – Build end-to-end web and mobile applications. (Tags: Development, Web, Mobile, Applications)
+SaaS Application Development – Develop scalable and secure SaaS platforms. (Tags: SaaS, Software, Cloud Applications, Development)
+3. Cloud & IT Services
+Microsoft 365 Services – Setup, integration, and management of Microsoft 365. (Tags: Cloud, Microsoft, Office 365, Productivity)
+Cloud-Native Architectures – Design and deploy scalable cloud-based systems. (Tags: Cloud, Infrastructure, Scalability, Architecture)
+API Integrations – Connect and streamline business applications via APIs. (Tags: API, Integration, Automation, Connectivity)
+Data-Driven Automation – Automate workflows using analytics and AI. (Tags: Automation, AI, Data, Workflows)
+Enterprise-Grade Security – Implement robust cybersecurity measures. (Tags: Security, Cybersecurity, Cloud, IT)
+4. Business Solutions
+CRM Implementations – Deploy and customize CRM platforms for growth. (Tags: CRM, Business, Sales, Customer Management)
+Performance Optimization – Enhance system performance and efficiency. (Tags: Optimization, Performance, IT, Systems)
+Staff Augmentation – Provide skilled IT professionals on demand. (Tags: Staffing, IT, Workforce, Outsourcing)
+Continued Long-Term Support – Deliver proactive maintenance and scalability. (Tags: Support, Maintenance, Scalability, IT Services)
+5. Specialized Services
+Salesforce Services – Customize, integrate, and manage Salesforce solutions. (Tags: Salesforce, CRM, Cloud, Business)
+
+
+
+COMPANY TEAM - INTERNETWORKS
+
+1. Muizz Naveed Ali – Founder
+Role: Founder of Internetworks.
+Focus: Leads company vision, strategy, and service expansion.
+Tags: Founder, Leadership, Strategy, Business Growth.
+2. Muhammad Huzaifa Arif – Director
+Role: Director of Internetworks.
+Focus: Oversees operations, partnerships, and project execution.
+Tags: Director, Management, Operations, Business Development.
+3. Usama Javed – Senior Software Engineer (AI Integration)
+Role: Senior Software Engineer specializing in AI solutions.
+Focus: Develops and integrates AI technologies such as chatbots and automated learning management systems (ALMS).
+Tags: Software Engineering, AI, Chatbots, Automation, Integration.
+
+4. Danial Ayyaz – Frontend Developer
+Role: Frontend Developer.
+Focus: Designs and builds user-friendly interfaces for web and mobile applications.
+Tags: Frontend, Web Development, UI/UX, Applications.
+5. Soha Sarwar – AI Prompt Engineer
+Role: AI Prompt Engineer.
+Focus: Crafts, tests, and optimizes prompts for AI-driven solutions.
+Tags: AI, Prompt Engineering, NLP, LLMs.
