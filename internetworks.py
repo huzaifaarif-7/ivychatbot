@@ -103,7 +103,7 @@ def get_calendly_preview():
 
 def chat_with_bot(prompt):
     response = client.chat.completions.create(
-        model = ""google/gemma-4-31b-it:free"", 
+        model = "google/gemma-4-31b-it:free", 
         messages = [{"role": "system", "content": system_prompt},
             {"role" :"user", "content" : prompt}] )
 
