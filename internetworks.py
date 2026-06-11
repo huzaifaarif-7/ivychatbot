@@ -7,7 +7,7 @@ import os
 
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
-    api_key="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")
+    api_key="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")
 
 
 knowledge_base = """ Company Profile - INTERNETWORKS . 
@@ -103,7 +103,7 @@ def get_calendly_preview():
 
 def chat_with_bot(prompt):
     response = client.chat.completions.create(
-        model = "deepseek/deepseek-r1-0528-qwen3-8b:free", 
+        model = "google/gemma-4-31b-it:free", 
         messages = [{"role": "system", "content": system_prompt},
             {"role" :"user", "content" : prompt}] )
 
