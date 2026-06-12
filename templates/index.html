@@ -447,7 +447,7 @@
         <div id="chatContainer"></div>
         <div id="inputContainer">
             <div class="input-wrapper">
-                <input type="text" id="userInput" placeholder="Ask anything" />
+                <input type="text" id="userInput" placeholder="Ask anything" maxlength="2000" />
                 <button id="sendBtn">➤</button>
             </div>
         </div>
@@ -465,6 +465,30 @@
             const msg = document.createElement("div");
             msg.classList.add("message");
             msg.textContent = message;
+
+            row.appendChild(msg);
+            chatContainer.appendChild(row);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function addCalendlyMessage(message, url) {
+            const row = document.createElement("div");
+            row.classList.add("messageRow", "botRow");
+
+            const msg = document.createElement("div");
+            msg.classList.add("message");
+
+            const text = document.createElement("span");
+            text.textContent = message + " ";
+            msg.appendChild(text);
+
+            const link = document.createElement("a");
+            link.href = url;
+            link.textContent = "Book a meeting";
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.style.color = "#10a37f";
+            msg.appendChild(link);
 
             row.appendChild(msg);
             chatContainer.appendChild(row);
@@ -524,7 +548,18 @@
 
                 const data = await response.json();
                 hideTypingIndicator();
-                addMessage(data.response, "bot");
+
+                if (!response.ok) {
+                    addMessage(data.error || "Sorry, there was an error processing your request.", "bot");
+                    return;
+                }
+
+                if (data.type === "calendly_link" && data.url) {
+                    addCalendlyMessage(data.message || "You can book a meeting with our team:", data.url);
+                    return;
+                }
+
+                addMessage(data.response || "Sorry, I could not generate a response.", "bot");
             } catch (error) {
                 hideTypingIndicator();
                 addMessage("Sorry, there was an error processing your request.", "bot");
