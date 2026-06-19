@@ -1,0 +1,11 @@
+User-agent: *
+Disallow: /chat
+Disallow: /transcribe
+Disallow: /speak
+Disallow: /models
+Disallow: /voice-status
+Disallow: /health
+
+# The chat API should not be indexed or crawled.
+# Only the root page is intentionally public.
+Allow: /

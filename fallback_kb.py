@@ -254,8 +254,11 @@ KB_ENTRIES = [
 
 
 def _score_entry(message: str, keywords: list[str]) -> int:
+    # Pad with spaces so single-word boundary checks work without regex.
+    # All matching uses the padded string — never fall back to the raw
+    # message, which would allow partial-word matches like "ui" in "build".
     padded = f" {message} "
-    return sum(1 for keyword in keywords if keyword in padded or keyword in message)
+    return sum(1 for keyword in keywords if keyword in padded)
 
 
 def get_fallback_response(user_message: str) -> str:

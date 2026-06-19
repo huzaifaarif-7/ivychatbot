@@ -9,11 +9,13 @@ State machine stages (linear flow):
 
 Any stage except idle/done accepts "cancel" to reset cleanly to idle.
 
-NOTE: Session state is stored in-memory (per-process). In a multi-worker
-Gunicorn deployment, a user's request could land on a different worker
-mid-flow and lose state. For production with >1 worker, replace the
-_sessions dict with a Redis-backed store (store session as JSON, same
-pattern as the rate limiter fix).
+SESSION STORAGE
+---------------
+Tries Redis first (if Config.REDIS_URL is set) for multi-worker safety.
+Falls back to an in-memory dict when Redis is unavailable.
+In-memory mode is safe for single-worker deployments (dev / simple prod)
+but sessions will not survive worker restarts and will not be shared across
+multiple Gunicorn workers.
 """
 
 import json
@@ -25,19 +27,50 @@ import time
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from email.utils import formataddr
+from pathlib import Path
 
 from config import Config
 
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# Session state store (in-memory, per-process)
-# ============================================================================
+# ---------------------------------------------------------------------------
+# Absolute path for the lead backup file — safe regardless of cwd.
+# ---------------------------------------------------------------------------
+_BACKUP_PATH = Path(__file__).parent / "data" / "leads_backup.jsonl"
 
-_sessions: dict[str, dict] = {}
-_sessions_lock = threading.Lock()
+# ============================================================================
+# Session storage — Redis preferred, in-memory fallback
+# ============================================================================
 
 SESSION_TTL_SECONDS = 1800  # 30 minutes of inactivity → session expires
+
+_redis_client = None  # populated below if Redis is available
+
+
+def _init_redis():
+    """Try to connect to Redis. Returns the client or None on failure."""
+    if not Config.REDIS_URL:
+        return None
+    try:
+        import redis  # type: ignore
+        client = redis.from_url(Config.REDIS_URL, decode_responses=True, socket_connect_timeout=2)
+        client.ping()
+        logger.info({"event": "session_store_backend", "backend": "redis"})
+        return client
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning({
+            "event": "session_store_backend",
+            "backend": "memory_fallback",
+            "reason": str(exc)[:200],
+        })
+        return None
+
+
+_redis_client = _init_redis()
+
+# In-memory fallback store (used when Redis is unavailable)
+_sessions: dict[str, dict] = {}
+_sessions_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Stage constants
@@ -89,9 +122,57 @@ def _now() -> float:
     return time.monotonic()
 
 
-def _cleanup_stale_sessions() -> None:
-    """Remove sessions that have been inactive longer than SESSION_TTL_SECONDS.
-    Must be called while holding _sessions_lock."""
+# ---------------------------------------------------------------------------
+# Redis helpers
+# ---------------------------------------------------------------------------
+
+_REDIS_PREFIX = "ivy:session:"
+
+
+def _redis_get(session_id: str) -> dict | None:
+    """Fetch session dict from Redis. Returns None on miss or error."""
+    if not _redis_client:
+        return None
+    try:
+        raw = _redis_client.get(f"{_REDIS_PREFIX}{session_id}")
+        return json.loads(raw) if raw else None
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning({"event": "redis_get_error", "error": str(exc)[:200]})
+        return None
+
+
+def _redis_set(session_id: str, session: dict) -> bool:
+    """Write session dict to Redis with TTL. Returns True on success."""
+    if not _redis_client:
+        return False
+    try:
+        _redis_client.setex(
+            f"{_REDIS_PREFIX}{session_id}",
+            SESSION_TTL_SECONDS,
+            json.dumps(session),
+        )
+        return True
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning({"event": "redis_set_error", "error": str(exc)[:200]})
+        return False
+
+
+def _redis_delete(session_id: str) -> None:
+    if not _redis_client:
+        return
+    try:
+        _redis_client.delete(f"{_REDIS_PREFIX}{session_id}")
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
+# ---------------------------------------------------------------------------
+# In-memory helpers
+# ---------------------------------------------------------------------------
+
+
+def _mem_cleanup_stale() -> None:
+    """Remove expired in-memory sessions. Must be called while holding lock."""
     cutoff = _now() - SESSION_TTL_SECONDS
     stale = [sid for sid, s in _sessions.items() if s.get("last_active", 0) < cutoff]
     for sid in stale:
@@ -100,11 +181,25 @@ def _cleanup_stale_sessions() -> None:
         logger.debug({"event": "sessions_cleaned", "count": len(stale)})
 
 
+# ---------------------------------------------------------------------------
+# Unified session API
+# ---------------------------------------------------------------------------
+
+
 def _get_session(session_id: str) -> dict:
     """Return the session dict for session_id, creating it if absent.
-    Updates last_active timestamp. Thread-safe."""
+    Updates last_active. Tries Redis first, falls back to in-memory.
+    """
+    # --- Redis path ---
+    session = _redis_get(session_id)
+    if session is not None:
+        session["last_active"] = _now()
+        _redis_set(session_id, session)
+        return session
+
+    # --- In-memory path ---
     with _sessions_lock:
-        _cleanup_stale_sessions()
+        _mem_cleanup_stale()
         if session_id not in _sessions:
             _sessions[session_id] = {
                 "stage": STAGE_IDLE,
@@ -112,17 +207,27 @@ def _get_session(session_id: str) -> dict:
                 "last_active": _now(),
             }
         _sessions[session_id]["last_active"] = _now()
+        # Sync to Redis if available (handles the case where in-memory has it
+        # but Redis missed it due to a transient error on the last write).
+        if _redis_client:
+            _redis_set(session_id, _sessions[session_id])
         return _sessions[session_id]
+
+
+def _save_session(session_id: str, session: dict) -> None:
+    """Persist session changes to whichever backend is active."""
+    if not _redis_set(session_id, session):
+        # Redis unavailable — write/update in-memory store.
+        with _sessions_lock:
+            _sessions[session_id] = session
 
 
 def _reset_session(session_id: str) -> None:
     """Reset session to idle state, clearing all collected data."""
-    with _sessions_lock:
-        _sessions[session_id] = {
-            "stage": STAGE_IDLE,
-            "data": {},
-            "last_active": _now(),
-        }
+    blank = {"stage": STAGE_IDLE, "data": {}, "last_active": _now()}
+    if not _redis_set(session_id, blank):
+        with _sessions_lock:
+            _sessions[session_id] = blank
 
 
 def _sanitize_for_email(value: str) -> str:
@@ -176,6 +281,7 @@ def handle_lead_message(session_id: str, user_message: str) -> str:
     # ------------------------------------------------------------------
     if stage == STAGE_IDLE:
         session["stage"] = STAGE_ASK_NAME
+        _save_session(session_id, session)
         logger.info({"event": "lead_capture_started", "session_id": session_id})
         return (
             "That's great to hear! I'd love to connect you with our team "
@@ -193,6 +299,7 @@ def handle_lead_message(session_id: str, user_message: str) -> str:
             return "Could you share your name again? Even just your first name works."
         data["name"] = name
         session["stage"] = STAGE_ASK_CONTACT
+        _save_session(session_id, session)
         return (
             f"Nice to meet you, {name}! "
             f"What's the best phone number or email address to reach you at?"
@@ -210,6 +317,7 @@ def handle_lead_message(session_id: str, user_message: str) -> str:
             )
         data["contact"] = contact
         session["stage"] = STAGE_ASK_SOFTWARE
+        _save_session(session_id, session)
         return (
             "Got it! Now, what kind of software or technology are you "
             "looking to build? "
@@ -225,6 +333,7 @@ def handle_lead_message(session_id: str, user_message: str) -> str:
             return "Could you tell me a bit more about what you're looking to build?"
         data["software"] = software
         session["stage"] = STAGE_ASK_WORK_DETAILS
+        _save_session(session_id, session)
         return (
             "Great! Last thing — can you describe the project in a bit more "
             "detail? Things like timeline, scope, or any specific requirements "
@@ -240,6 +349,7 @@ def handle_lead_message(session_id: str, user_message: str) -> str:
             return "Could you share a bit more detail about the project?"
         data["work_details"] = work_details
         session["stage"] = STAGE_CONFIRM
+        _save_session(session_id, session)
         return (
             "Here's what I've got:\n\n"
             f"• **Name:** {data['name']}\n"
@@ -257,6 +367,7 @@ def handle_lead_message(session_id: str, user_message: str) -> str:
         if _CONFIRM_YES.search(user_message):
             success = _send_lead_email(data)
             session["stage"] = STAGE_DONE
+            _save_session(session_id, session)
             logger.info(
                 {
                     "event": "lead_capture_completed",
@@ -282,6 +393,7 @@ def handle_lead_message(session_id: str, user_message: str) -> str:
             # User wants to redo — restart from name
             session["stage"] = STAGE_ASK_NAME
             data.clear()
+            _save_session(session_id, session)
             return "No problem — let's redo this from the top. What's your name?"
 
         else:
@@ -291,12 +403,16 @@ def handle_lead_message(session_id: str, user_message: str) -> str:
             )
 
     # ------------------------------------------------------------------
-    # DONE — session is complete; reset so a new flow can start fresh
+    # DONE — FIX: do NOT recurse. Reset and return a neutral reply.
+    # Recursing caused IVY to restart the lead capture flow for any
+    # follow-up message sent immediately after completion.
     # ------------------------------------------------------------------
     if stage == STAGE_DONE:
         _reset_session(session_id)
-        # Re-run as if the session is now idle so we don't silently eat the message
-        return handle_lead_message(session_id, user_message)
+        logger.info({"event": "lead_capture_post_done_reset", "session_id": session_id})
+        return (
+            "Is there anything else I can help you with regarding Internetworks?"
+        )
 
     # ------------------------------------------------------------------
     # Safety net — should never be reached
@@ -391,16 +507,17 @@ def _send_lead_email(data: dict) -> bool:
 
 
 def _backup_lead_to_file(data: dict) -> None:
-    """Append the lead as a JSON line to leads_backup.jsonl.
+    """Append the lead as a JSON line to the backup file.
 
-    This is a safety net — if SMTP is not configured or fails, the
-    data is still persisted locally and can be reviewed manually.
+    Uses an absolute path anchored to the project root so the file
+    location is predictable regardless of the process working directory.
     File is excluded from git via .gitignore.
     """
     try:
+        _BACKUP_PATH.parent.mkdir(parents=True, exist_ok=True)
         record = {**data, "timestamp": datetime.now(timezone.utc).isoformat()}
-        with open("leads_backup.jsonl", "a", encoding="utf-8") as fh:
+        with open(_BACKUP_PATH, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-        logger.info({"event": "lead_backup_written"})
+        logger.info({"event": "lead_backup_written", "path": str(_BACKUP_PATH)})
     except OSError as exc:
         logger.error({"event": "lead_backup_failed", "error": str(exc)})

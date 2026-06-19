@@ -32,6 +32,11 @@ class Config:
         }
     )
 
+    # Redis URL for production rate limiting and session state.
+    # When absent, both fall back to in-memory (single-worker / dev only).
+    # Example: redis://localhost:6379/0  or  rediss://user:pass@host:6380/0
+    REDIS_URL: str = os.environ.get("REDIS_URL", "")
+
     OPENROUTER_TIMEOUT = int(os.environ.get("OPENROUTER_TIMEOUT", "8"))
     FLASK_DEBUG = os.environ.get("FLASK_DEBUG", "false").lower() in (
         "true",

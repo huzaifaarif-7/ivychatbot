@@ -18,5 +18,6 @@ htmlcov/
 .idea/
 .vscode/
 *.log
-.env.example
+# leads backup contains real PII — never commit it
+data/leads_backup.jsonl
 leads_backup.jsonl

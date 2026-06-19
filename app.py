@@ -32,6 +32,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Allowed MIME types for audio uploads (guard against non-audio payloads).
+# ---------------------------------------------------------------------------
+_ALLOWED_AUDIO_TYPES = frozenset({
+    "audio/webm",
+    "audio/ogg",
+    "audio/wav",
+    "audio/mpeg",
+    "audio/mp4",
+    "audio/x-m4a",
+    "application/octet-stream",  # some browsers send this as fallback
+})
+
+# ---------------------------------------------------------------------------
+# Fallback counter (with bounded memory — prune entries older than 2 hours).
+# ---------------------------------------------------------------------------
 _fallback_lock = threading.Lock()
 _fallback_counts: dict[str, int] = defaultdict(int)
 
@@ -39,6 +55,14 @@ _fallback_counts: dict[str, int] = defaultdict(int)
 def _record_fallback() -> int:
     hour_key = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H")
     with _fallback_lock:
+        # Prune keys older than the current and previous hour to bound memory.
+        keep = {
+            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H"),
+            (datetime.now(timezone.utc).replace(hour=max(0, datetime.now(timezone.utc).hour - 1))).strftime("%Y-%m-%dT%H"),
+        }
+        stale = [k for k in _fallback_counts if k not in keep]
+        for k in stale:
+            del _fallback_counts[k]
         _fallback_counts[hour_key] += 1
         return _fallback_counts[hour_key]
 
@@ -56,16 +80,79 @@ def _log_fallback_triggered(error: Exception) -> None:
         }
     )
 
+
+# ---------------------------------------------------------------------------
+# Cache voice_enabled() once at startup — it reads config, never needs I/O.
+# ---------------------------------------------------------------------------
+_VOICE_ENABLED: bool = voice_enabled()
+
 app = Flask(__name__)
 app.config["SECRET_KEY"] = Config.SECRET_KEY
 app.config["JSON_SORT_KEYS"] = False
+
+# ---------------------------------------------------------------------------
+# Rate limiter — uses Redis in production, falls back to memory in dev.
+# ---------------------------------------------------------------------------
+_limiter_storage = (
+    f"redis://{Config.REDIS_URL.split('://', 1)[-1]}"
+    if Config.REDIS_URL
+    else "memory://"
+)
+if Config.REDIS_URL:
+    logger.info({"event": "rate_limiter_backend", "backend": "redis"})
+else:
+    logger.warning({
+        "event": "rate_limiter_backend",
+        "backend": "memory",
+        "warning": "In-memory rate limiting is per-process. Set REDIS_URL for multi-worker safety.",
+    })
 
 limiter = Limiter(
     get_remote_address,
     app=app,
     default_limits=[Config.RATE_LIMIT],
-    storage_uri="memory://",
+    storage_uri=Config.REDIS_URL if Config.REDIS_URL else "memory://",
 )
+
+
+# ---------------------------------------------------------------------------
+# CSRF / Origin check — rejects cross-origin POST requests.
+# This is a lightweight same-origin guard; add flask-wtf tokens if you add
+# authenticated sessions.
+# ---------------------------------------------------------------------------
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+@app.before_request
+def check_origin():
+    """Reject POST/PUT/PATCH/DELETE requests that originate from a different
+    site. Only applied when the server knows its own host (non-debug or
+    when a HOST env var is set).
+    """
+    if request.method in _SAFE_METHODS:
+        return  # GET requests are always allowed
+
+    # In debug mode with no explicit host configured, skip the check so
+    # local curl / Postman testing still works.
+    if Config.FLASK_DEBUG:
+        return
+
+    origin = request.headers.get("Origin") or request.headers.get("Referer") or ""
+    if not origin:
+        # No Origin/Referer header — could be a same-origin request from
+        # an older browser. Allow it (strict mode would block, but that
+        # would break some legitimate same-origin flows).
+        return
+
+    server_host = request.host  # e.g. "yourdomain.com" or "yourdomain.com:443"
+    if server_host not in origin:
+        logger.warning({
+            "event": "csrf_origin_rejected",
+            "origin": origin[:200],
+            "host": server_host,
+            "path": request.path,
+        })
+        return jsonify({"error": "Forbidden"}), 403
 
 
 @app.after_request
@@ -73,8 +160,8 @@ def set_security_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    # Allow microphone when voice is enabled so getUserMedia() works in the browser.
-    mic_policy = "microphone=*" if voice_enabled() else "microphone=()"
+    # (self) not * — only our own page may request mic access, never a third-party iframe.
+    mic_policy = "microphone=(self)" if _VOICE_ENABLED else "microphone=()"
     response.headers["Permissions-Policy"] = f"geolocation=(), {mic_policy}, camera=()"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
@@ -105,9 +192,34 @@ def handle_unexpected_exception(error: Exception):
     return jsonify({"error": "An internal error occurred."}), 500
 
 
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+
 @app.route("/")
 def home():
     return render_template("index.html")
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    """Liveness probe for load balancers and uptime monitors.
+
+    Returns 200 with a minimal JSON body. No auth required.
+    Does NOT exercise downstream dependencies (OpenRouter, Redis) — use
+    a separate readiness probe for that.
+    """
+    return jsonify({"status": "ok", "voice_enabled": _VOICE_ENABLED})
+
+
+@app.route("/robots.txt", methods=["GET"])
+def robots():
+    """Serve robots.txt from the static directory at the root URL path."""
+    return send_file(
+        os.path.join(app.static_folder, "robots.txt"),
+        mimetype="text/plain",
+    )
 
 
 @app.route("/voice-status", methods=["GET"])
@@ -118,7 +230,8 @@ def voice_status():
         200 {"voice_enabled": false}   — when voice is disabled (default)
         200 {"voice_enabled": true}    — when voice is fully configured
     """
-    return jsonify({"voice_enabled": voice_enabled()})
+    return jsonify({"voice_enabled": _VOICE_ENABLED})
+
 
 @app.route("/transcribe", methods=["POST"])
 @limiter.limit(Config.RATE_LIMIT)
@@ -129,7 +242,7 @@ def transcribe():
     Response (200): {"text": "..."}
     Response (4xx/5xx): {"error": "..."}
     """
-    if not voice_enabled():
+    if not _VOICE_ENABLED:
         return jsonify({"error": "Voice features are not enabled"}), 403
 
     if "audio" not in request.files:
@@ -138,6 +251,16 @@ def transcribe():
     audio_file = request.files["audio"]
     if audio_file.filename == "":
         return jsonify({"error": "No audio file provided"}), 400
+
+    # Validate MIME type before spending an API call.
+    content_type = (audio_file.content_type or "").split(";")[0].strip().lower()
+    if content_type and content_type not in _ALLOWED_AUDIO_TYPES:
+        logger.warning({
+            "event": "transcribe_rejected",
+            "reason": "invalid_content_type",
+            "content_type": content_type,
+        })
+        return jsonify({"error": "Unsupported audio format."}), 415
 
     # Basic size guard — reject anything over 25 MB (Whisper's own limit).
     audio_file.seek(0, 2)
@@ -164,7 +287,7 @@ def speak():
     Response (200): audio/mpeg binary stream
     Response (4xx/5xx): {"error": "..."}
     """
-    if not voice_enabled():
+    if not _VOICE_ENABLED:
         return jsonify({"error": "Voice features are not enabled"}), 403
 
     payload = request.get_json(silent=True)
@@ -288,7 +411,6 @@ def chat():
         return jsonify(bot_response)
 
     return jsonify({"response": bot_response})
-
 
 
 if __name__ == "__main__":
