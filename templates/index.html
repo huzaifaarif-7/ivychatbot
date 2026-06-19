@@ -232,8 +232,94 @@
     .send:active { transform: scale(.94); }
     .send:disabled { background: var(--surface-3); color: var(--text-faint); cursor: default; }
     .send svg { width: 19px; height: 19px; }
+
+    /* ---------- Microphone Button (voice architecture — hidden until enabled) ---------- */
+    .mic {
+      flex: 0 0 auto;
+      width: 42px; height: 42px; border: 1px solid var(--line); border-radius: 12px;
+      background: transparent; color: var(--text-dim);
+      display: inline-flex !important; /* always visible — cannot be overridden */
+      align-items: center; justify-content: center;
+      cursor: pointer;
+      transition: background .18s ease, border-color .18s ease, color .18s ease, transform .1s ease;
+    }
+    .mic:hover {
+      background: var(--surface-3);
+      border-color: var(--line-strong);
+      color: var(--text);
+    }
+    .mic:active { transform: scale(.94); }
+    .mic svg { width: 18px; height: 18px; }
+    /* Pulse ring while recording */
+    .mic.recording {
+      border-color: var(--danger);
+      color: var(--danger);
+      animation: mic-pulse 1.2s infinite ease-in-out;
+    }
+    @keyframes mic-pulse {
+      0%, 100% { box-shadow: 0 0 0 0   rgba(217,138,106,0); }
+      50%       { box-shadow: 0 0 0 6px rgba(217,138,106,0.28); }
+    }
+    /* voice-enabled: accent the mic button to signal it is live */
+    .voice-ready .mic { border-color: rgba(127,174,78,.45); color: var(--accent-soft); }
+    .voice-ready .mic:hover { background: var(--accent-glow); border-color: rgba(127,174,78,.7); }
+
+    /* ---------- Voice toast ---------- */
+    .voice-toast {
+      position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%) translateY(10px);
+      background: var(--surface-3); border: 1px solid var(--line-strong);
+      color: var(--text-dim); font-size: 13px; font-weight: 500;
+      padding: 9px 18px; border-radius: 24px;
+      display: flex; align-items: center; gap: 8px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.4);
+      opacity: 0; pointer-events: none;
+      transition: opacity .22s ease, transform .22s ease;
+      z-index: 100;
+      white-space: nowrap;
+    }
+    .voice-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .voice-toast svg { width: 14px; height: 14px; flex: 0 0 auto; color: var(--accent-soft); }
+
+    /* ---------- Model Selector ---------- */
+    .model-bar {
+      width: 100%; max-width: 760px; margin: 0 auto 10px;
+      display: flex; align-items: center; gap: 8px;
+      opacity: 0; transform: translateY(4px);
+      transition: opacity .25s ease, transform .25s ease;
+      pointer-events: none;
+    }
+    .model-bar.loaded { opacity: 1; transform: none; pointer-events: auto; }
+    .model-bar-label {
+      font-size: 12px; color: var(--text-faint);
+      white-space: nowrap; user-select: none; flex: 0 0 auto;
+    }
+    .model-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+    .model-pill {
+      padding: 5px 13px;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: transparent;
+      color: var(--text-dim);
+      font: inherit; font-size: 12.5px; font-weight: 500;
+      cursor: pointer;
+      transition: background .15s ease, border-color .15s ease, color .15s ease, transform .1s ease;
+      white-space: nowrap;
+    }
+    .model-pill:hover {
+      background: var(--surface-3);
+      border-color: var(--line-strong);
+      color: var(--text);
+    }
+    .model-pill:active { transform: scale(.96); }
+    .model-pill.active {
+      background: var(--accent-glow);
+      border-color: rgba(127,174,78,.55);
+      color: var(--accent-soft);
+    }
+
     .hint { max-width: 760px; margin: 8px auto 0; text-align: center;
             font-size: 12px; color: var(--text-faint); }
+
 
     /* scrollbar */
     .stream::-webkit-scrollbar { width: 10px; }
@@ -322,9 +408,24 @@
       <div class="composer-wrap">
         <div class="composer">
           <textarea id="input" rows="1" placeholder="Ask anything" autocomplete="off" aria-label="Message"></textarea>
+          <!-- Microphone button — always visible; shows a "coming soon" toast
+               when voice is disabled, wires up STT when voice is enabled. -->
+          <button class="mic" id="micBtn" type="button" aria-label="Voice input" title="Voice input" style="display:inline-flex">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="2" width="6" height="11" rx="3"/>
+              <path d="M5 10a7 7 0 0 0 14 0"/>
+              <line x1="12" y1="19" x2="12" y2="22"/>
+              <line x1="8" y1="22" x2="16" y2="22"/>
+            </svg>
+          </button>
           <button class="send" id="send" type="button" aria-label="Send" disabled>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>
           </button>
+        </div>
+        <!-- Model selector bar — populated dynamically from GET /models -->
+        <div class="model-bar" id="modelBar" role="group" aria-label="AI model selector">
+          <span class="model-bar-label">Model:</span>
+          <div class="model-pills" id="modelPills"></div>
         </div>
         <div class="hint">IVY can make mistakes. Verify important details.</div>
       </div>
@@ -346,7 +447,21 @@
 
       var busy = false;
 
-      /* ----- helpers ----- */
+      /* ----- session identity (sent with every /chat request) ----- */
+      function getOrCreateSessionId() {
+        var sid = sessionStorage.getItem("ivy_session_id");
+        if (!sid) {
+          // crypto.randomUUID() is available in all modern browsers
+          sid = (typeof crypto !== "undefined" && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : Math.random().toString(36).slice(2) + Date.now().toString(36);
+          sessionStorage.setItem("ivy_session_id", sid);
+        }
+        return sid;
+      }
+      var ivySessionId = getOrCreateSessionId();
+
+
       function escapeHtml(s) {
         return s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
                 .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -411,6 +526,56 @@
         addMessage("bot", format(text));
       }
 
+      /* ----- Model selector state (session-persistent) ----- */
+      var selectedModel = null; // null = use backend default (Gemma)
+
+      (function initModels() {
+        var modelBar   = document.getElementById("modelBar");
+        var pillsWrap  = document.getElementById("modelPills");
+
+        fetch("/models")
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            if (!data || !Array.isArray(data.models) || data.models.length === 0) return;
+
+            // Restore persisted choice from sessionStorage (same tab session only).
+            var stored = sessionStorage.getItem("ivy_model");
+            var validIds = data.models.map(function (m) { return m.id; });
+            selectedModel = (stored && validIds.indexOf(stored) !== -1) ? stored : data.default;
+
+            // Build pill buttons.
+            data.models.forEach(function (model) {
+              var btn = document.createElement("button");
+              btn.type = "button";
+              btn.className = "model-pill" + (model.id === selectedModel ? " active" : "");
+              btn.textContent = model.label;
+              btn.dataset.modelId = model.id;
+              btn.setAttribute("aria-pressed", model.id === selectedModel ? "true" : "false");
+              btn.setAttribute("title", model.id);
+
+              btn.addEventListener("click", function () {
+                selectedModel = model.id;
+                sessionStorage.setItem("ivy_model", selectedModel);
+                // Update active state on all pills.
+                pillsWrap.querySelectorAll(".model-pill").forEach(function (p) {
+                  var active = p.dataset.modelId === selectedModel;
+                  p.classList.toggle("active", active);
+                  p.setAttribute("aria-pressed", active ? "true" : "false");
+                });
+              });
+
+              pillsWrap.appendChild(btn);
+            });
+
+            // Fade the bar in now that it's populated.
+            modelBar.classList.add("loaded");
+          })
+          .catch(function (err) {
+            // Network error — silently ignore; selectedModel stays null = Gemma default.
+            console.debug("[IVY Models] Could not fetch /models:", err);
+          });
+      })();
+
       /* ----- send ----- */
       async function send() {
         var text = input.value.trim();
@@ -427,10 +592,16 @@
         var typing = addTyping();
 
         try {
+          // Build the payload. Always include message and session_id.
+          // Include model only when the user has explicitly chosen one.
+          // Omitting model means the backend will use its default (Gemma).
+          var payload = { message: text, session_id: ivySessionId };
+          if (selectedModel) { payload.model = selectedModel; }
+
           var res = await fetch("/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: text })
+            body: JSON.stringify(payload)
           });
 
           var data = null;
@@ -484,6 +655,147 @@
 
       autoGrow();
       input.focus();
+
+      // ----------------------------------------------------------------
+      // Voice initialisation — runs once on page load.
+      // The mic button is always visible. Behaviour depends on voice status:
+      //   voice_enabled=false → clicking shows a "coming soon" toast
+      //   voice_enabled=true  → clicking starts the STT recording flow
+      // This block never touches the text chat send() path.
+      // ----------------------------------------------------------------
+      (function initVoice() {
+        var micBtn   = document.getElementById("micBtn");
+        var composer = document.querySelector(".composer");
+
+        // Inject the toast element once.
+        var toast = document.createElement("div");
+        toast.className = "voice-toast";
+        toast.id = "voiceToast";
+        toast.innerHTML =
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+          + '<rect x="9" y="2" width="6" height="11" rx="3"/>'
+          + '<path d="M5 10a7 7 0 0 0 14 0"/>'
+          + '<line x1="12" y1="19" x2="12" y2="22"/>'
+          + '<line x1="8" y1="22" x2="16" y2="22"/>'
+          + '</svg>'
+          + '<span id="voiceToastMsg">Voice input is coming soon</span>';
+        document.body.appendChild(toast);
+
+        var toastTimer = null;
+        // showToast(msg) — msg is optional; defaults to "coming soon" text.
+        function showToast(msg) {
+          var msgEl = document.getElementById("voiceToastMsg");
+          if (msgEl) msgEl.textContent = msg || "Voice input is coming soon";
+          toast.classList.add("show");
+          clearTimeout(toastTimer);
+          toastTimer = setTimeout(function () { toast.classList.remove("show"); }, 2800);
+        }
+
+        // ----------------------------------------------------------------
+        // MediaRecorder state
+        // ----------------------------------------------------------------
+        var mediaRecorder = null;
+        var audioChunks   = [];
+        var isRecording   = false;
+
+        async function startRecording() {
+          try {
+            var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+            audioChunks   = [];
+
+            mediaRecorder.ondataavailable = function (e) {
+              if (e.data && e.data.size > 0) audioChunks.push(e.data);
+            };
+
+            mediaRecorder.onstop = async function () {
+              // Stop all tracks so the browser mic indicator goes away.
+              stream.getTracks().forEach(function (t) { t.stop(); });
+              var audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+              await sendAudioForTranscription(audioBlob);
+            };
+
+            mediaRecorder.start();
+            isRecording = true;
+            micBtn.classList.add("recording");
+            micBtn.title = "Stop recording";
+            showToast("Recording… click mic to stop");
+          } catch (err) {
+            console.error("[IVY Voice] Mic access error:", err);
+            if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+              showToast("Microphone access denied");
+            } else {
+              showToast("Could not access microphone");
+            }
+          }
+        }
+
+        function stopRecording() {
+          if (mediaRecorder && isRecording) {
+            mediaRecorder.stop();
+            isRecording = false;
+            micBtn.classList.remove("recording");
+            micBtn.title = "Start voice input";
+          }
+        }
+
+        async function sendAudioForTranscription(audioBlob) {
+          showToast("Transcribing…");
+
+          var formData = new FormData();
+          formData.append("audio", audioBlob, "recording.webm");
+
+          try {
+            var res  = await fetch("/transcribe", { method: "POST", body: formData });
+            var data = null;
+            try { data = await res.json(); } catch (e) { data = null; }
+
+            if (res.ok && data && data.text) {
+              // Insert the transcript into the chat input and trigger autoGrow
+              // so the send button enables and the textarea resizes.
+              input.value = data.text;
+              autoGrow();
+              input.focus();
+              // Hide the toast — the text is now visible in the input.
+              toast.classList.remove("show");
+            } else {
+              showToast((data && data.error) ? data.error : "Transcription failed");
+            }
+          } catch (err) {
+            console.error("[IVY Voice] Transcription error:", err);
+            showToast("Transcription failed");
+          }
+        }
+
+        // ----------------------------------------------------------------
+        // Boot: check voice status then attach the appropriate handler.
+        // ----------------------------------------------------------------
+        fetch("/voice-status")
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            if (data && data.voice_enabled === true) {
+              // Voice is live — accent the button and wire up recording.
+              composer.classList.add("voice-ready");
+              micBtn.title = "Start voice input";
+              micBtn.addEventListener("click", function () {
+                if (!isRecording) {
+                  startRecording();
+                } else {
+                  stopRecording();
+                }
+              });
+            } else {
+              // Voice is disabled — show a friendly "coming soon" toast.
+              micBtn.title = "Voice input — coming soon";
+              micBtn.addEventListener("click", function () { showToast(); });
+            }
+          })
+          .catch(function () {
+            // Network error — fall back to the "coming soon" behaviour.
+            micBtn.title = "Voice input — coming soon";
+            micBtn.addEventListener("click", function () { showToast(); });
+          });
+      })();
     })();
   </script>
 </body>

@@ -3,8 +3,9 @@ import os
 import threading
 from collections import defaultdict
 from datetime import datetime, timezone
+from io import BytesIO
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.exceptions import HTTPException
@@ -17,6 +18,13 @@ from internetworks import (
     is_meeting_request,
     sanitize_user_message,
 )
+from voice_service import voice_enabled, transcribe_audio, generate_voice_response
+from lead_capture import (
+    handle_lead_message,
+    is_in_lead_capture,
+    should_start_lead_capture,
+)
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,7 +73,9 @@ def set_security_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    # Allow microphone when voice is enabled so getUserMedia() works in the browser.
+    mic_policy = "microphone=*" if voice_enabled() else "microphone=()"
+    response.headers["Permissions-Policy"] = f"geolocation=(), {mic_policy}, camera=()"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' https://assets.calendly.com; "
@@ -100,6 +110,113 @@ def home():
     return render_template("index.html")
 
 
+@app.route("/voice-status", methods=["GET"])
+def voice_status():
+    """Return the current voice feature status.
+
+    Response:
+        200 {"voice_enabled": false}   — when voice is disabled (default)
+        200 {"voice_enabled": true}    — when voice is fully configured
+    """
+    return jsonify({"voice_enabled": voice_enabled()})
+
+@app.route("/transcribe", methods=["POST"])
+@limiter.limit(Config.RATE_LIMIT)
+def transcribe():
+    """Transcribe uploaded audio to text using OpenAI Whisper.
+
+    Request: multipart/form-data with field 'audio' (binary audio file).
+    Response (200): {"text": "..."}
+    Response (4xx/5xx): {"error": "..."}
+    """
+    if not voice_enabled():
+        return jsonify({"error": "Voice features are not enabled"}), 403
+
+    if "audio" not in request.files:
+        return jsonify({"error": "Missing audio file"}), 400
+
+    audio_file = request.files["audio"]
+    if audio_file.filename == "":
+        return jsonify({"error": "No audio file provided"}), 400
+
+    # Basic size guard — reject anything over 25 MB (Whisper's own limit).
+    audio_file.seek(0, 2)
+    size = audio_file.tell()
+    audio_file.seek(0)
+    if size > 25 * 1024 * 1024:
+        return jsonify({"error": "Audio file too large (max 25 MB)"}), 400
+
+    result = transcribe_audio(audio_file.read(), audio_file.mimetype)
+
+    if result["success"]:
+        return jsonify({"text": result["transcript"]})
+
+    logger.warning({"event": "transcription_failed", "error": result["error"]})
+    return jsonify({"error": "Could not transcribe audio. Please try again or type your message."}), 500
+
+
+@app.route("/speak", methods=["POST"])
+@limiter.limit(Config.RATE_LIMIT)
+def speak():
+    """Convert text to speech using OpenAI TTS and return MP3 audio.
+
+    Request: JSON {"text": "..."}
+    Response (200): audio/mpeg binary stream
+    Response (4xx/5xx): {"error": "..."}
+    """
+    if not voice_enabled():
+        return jsonify({"error": "Voice features are not enabled"}), 403
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Invalid JSON"}), 400
+
+    text = payload.get("text", "").strip()
+    if not text:
+        return jsonify({"error": "Missing text"}), 400
+    if len(text) > 4000:
+        text = text[:4000]
+
+    result = generate_voice_response(text)
+
+    if not result.get("success"):
+        return jsonify({"error": result.get("error", "Speech generation failed")}), 500
+
+    return send_file(
+        BytesIO(result["audio_bytes"]),
+        mimetype="audio/mpeg",
+        as_attachment=False,
+    )
+
+
+@app.route("/models", methods=["GET"])
+def list_models():
+    """Return the allowed model list with human-readable labels.
+
+    The frontend uses this to populate the model selector and to validate
+    user selections. The backend whitelist (Config.ALLOWED_MODELS) is the
+    single source of truth — the frontend never hardcodes model IDs.
+
+    Response shape:
+        {
+          "default": "google/gemma-4-31b-it:free",
+          "models": [
+            {"id": "google/gemma-4-31b-it:free", "label": "Gemma"},
+            ...
+          ]
+        }
+    """
+    # Ordered display list — order matters for the UI dropdown.
+    ordered = [
+        {"id": "google/gemma-4-31b-it:free", "label": "Gemma"},
+        {"id": "anthropic/claude-sonnet-4",  "label": "Claude"},
+        {"id": "openai/gpt-4o",              "label": "GPT-4o"},
+    ]
+    # Only surface models that are in the whitelist (guard against stale list).
+    available = [m for m in ordered if m["id"] in Config.ALLOWED_MODELS]
+    return jsonify({"default": Config.LLM_MODEL, "models": available})
+
+
 @app.route("/chat", methods=["POST"])
 @limiter.limit(Config.RATE_LIMIT)
 def chat():
@@ -119,12 +236,49 @@ def chat():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
+    # --- Session ID (required for lead-capture state tracking) --------------
+    session_id = payload.get("session_id")
+    if not session_id or not isinstance(session_id, str):
+        return jsonify({"error": "Missing required field: session_id."}), 400
+    # Clamp to a safe length to prevent memory abuse
+    session_id = session_id[:128]
+    # -------------------------------------------------------------------------
+
+    # --- Model selection (optional field) ------------------------------------
+    # When "model" is absent or None, call_openrouter_with_timeout uses the
+    # default Config.LLM_MODEL (Gemma) — existing behaviour is fully preserved.
+    requested_model = payload.get("model")  # None when not supplied
+    if requested_model is not None:
+        if not isinstance(requested_model, str):
+            return jsonify({"error": "Field 'model' must be a string."}), 400
+        if requested_model not in Config.ALLOWED_MODELS:
+            return (
+                jsonify(
+                    {
+                        "error": "Unsupported model. Choose one of: "
+                        + ", ".join(sorted(Config.ALLOWED_MODELS))
+                    }
+                ),
+                400,
+            )
+    # -------------------------------------------------------------------------
+
+    # --- Lead capture (runs before meeting / AI checks) ----------------------
+    # Once a session is in the lead-capture flow, ALL messages are handled by
+    # the state machine — we do not want a meeting keyword mid-flow to abort
+    # the conversation and redirect to Calendly.
+    if is_in_lead_capture(session_id) or should_start_lead_capture(user_message):
+        reply = handle_lead_message(session_id, user_message)
+        logger.info({"event": "chat_response", "source": "lead_capture", "session_id": session_id})
+        return jsonify({"response": reply})
+    # -------------------------------------------------------------------------
+
     if is_meeting_request(user_message):
         return jsonify(get_calendly_response())
 
     try:
-        bot_response = call_openrouter_with_timeout(user_message)
-        logger.info({"event": "chat_response", "source": "ai"})
+        bot_response = call_openrouter_with_timeout(user_message, model=requested_model)
+        logger.info({"event": "chat_response", "source": "ai", "model": requested_model or Config.LLM_MODEL})
     except Exception as exc:
         _log_fallback_triggered(exc)
         bot_response = get_fallback_response(user_message)
@@ -134,6 +288,7 @@ def chat():
         return jsonify(bot_response)
 
     return jsonify({"response": bot_response})
+
 
 
 if __name__ == "__main__":

@@ -105,9 +105,17 @@ def get_calendly_response() -> dict:
     }
 
 
-def call_openrouter(user_message: str) -> str:
+def call_openrouter(user_message: str, model: str | None = None) -> str:
+    """Call the OpenRouter API with the given user message.
+
+    Args:
+        user_message: The sanitised user input.
+        model: Optional OpenRouter model string. Defaults to Config.LLM_MODEL
+               (Gemma) when None — existing behaviour is fully preserved.
+    """
+    resolved_model = model if model is not None else Config.LLM_MODEL
     response = client.chat.completions.create(
-         model=Config.LLM_MODEL,
+        model=resolved_model,
         messages=[
             {"role": "system", "content": system_prompt},
             {
@@ -127,13 +135,21 @@ def call_openrouter(user_message: str) -> str:
 
 
 def call_openrouter_with_timeout(
-    user_message: str, timeout: int | None = None
+    user_message: str, timeout: int | None = None, model: str | None = None
 ) -> str:
+    """Call OpenRouter with a hard wall-clock timeout.
+
+    Args:
+        user_message: The sanitised user input.
+        timeout:      Seconds to wait before raising TimeoutError. Defaults to
+                      Config.OPENROUTER_TIMEOUT.
+        model:        Optional model override. Passes through to call_openrouter.
+    """
     if timeout is None:
         timeout = Config.OPENROUTER_TIMEOUT
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        future = executor.submit(call_openrouter, user_message)
+        future = executor.submit(call_openrouter, user_message, model)
         try:
             return future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
