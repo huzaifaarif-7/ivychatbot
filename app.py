@@ -4,7 +4,7 @@ import threading
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_from_directory
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.exceptions import HTTPException
@@ -98,6 +98,15 @@ def handle_unexpected_exception(error: Exception):
 @app.route("/")
 def home():
     return render_template("index.html")
+
+
+@app.route("/favicon.ico")
+def favicon():
+    return send_from_directory(
+        os.path.join(app.root_path, "static"),
+        "logo.png",
+        mimetype="image/png",
+    )
 
 
 @app.route("/chat", methods=["POST"])
