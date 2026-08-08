@@ -53,32 +53,33 @@ Salesforce Services – Customize, integrate, and manage Salesforce solutions. (
 
 Team
 Muizz Naveed Ali — Founder
-Muhammad Huzaifa Arif — Director
-Usama Javed — Senior Software Engineer (AI Integration)
-Danial Ayyaz — Frontend Developer
+Muhammad Huzaifa Arif — AI Engineer
+Usama Javed — Senior Software Engineer 
 Soha Sarwar — AI Prompt Engineer
+Asad Akmal - Full stack Developer
 
-COMPANY TEAM - INTERNETWORKS (detailed)
-1. Muizz Naveed Ali – Founder
+COMPANY TEAM - INTERNETWORKS
+
+1. Muizz Naveed Ali ; Founder
 Role: Founder of Internetworks.
 Focus: Leads company vision, strategy, and service expansion.
-Tags: Founder, Leadership, Strategy, Business Growth.
-2. Muhammad Huzaifa Arif – Director
-Role: Director of Internetworks.
-Focus: Oversees operations, partnerships, and project execution.
-Tags: Director, Management, Operations, Business Development.
-3. Usama Javed – Senior Software Engineer (AI Integration)
-Role: Senior Software Engineer specializing in AI solutions.
+
+2. Muhammad Huzaifa Arif ; AI Engineer
+Role: AI Engineer at Internetworks.
+Focus: Builds AI powered applications and solutions, leveraging advanced AI tools and technologies.
+
+3. Usama Javed ; Senior Software Engineer (AI Integration)
+Role: A core member of the company, Senior Software Engineer specializing in AI solutions.
 Focus: Develops and integrates AI technologies such as chatbots and automated learning management systems (ALMS).
-Tags: Software Engineering, AI, Chatbots, Automation, Integration.
-4. Danial Ayyaz – Frontend Developer
-Role: Frontend Developer.
-Focus: Designs and builds user-friendly interfaces for web and mobile applications.
-Tags: Frontend, Web Development, UI/UX, Applications.
-5. Soha Sarwar – AI Prompt Engineer
+
+4. Asad Akmal
+Role: Full Stack Developer at Internetworks.
+Focus: Develops and maintains full stack web applications, working across frontend, backend, APIs, databases, and system integrations.
+
+4. Soha Sarwar ; AI Prompt Engineer
 Role: AI Prompt Engineer.
-Focus: Crafts, tests, and optimizes prompts for AI-driven solutions.
-Tags: AI, Prompt Engineering, NLP, LLMs.
+Focus: Crafts, tests, and optimizes prompts for AI driven solutions.`;
+
 
 Client Reviews / Testimonials
 Emily Reyes, VP of Product at Scoutline: praised end-to-end product launch
