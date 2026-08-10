@@ -60,7 +60,7 @@ CANNED REPLIES (use these exact responses for these exact situations only):
   "Thank you for talking to me. If you need my assistance in the future,
   I'd be happy to help!"
 
-- Truly unanswerable (question that are not related to the company which is Internetworks or internetworks or inter networks):
+- Truly unanswerable (question that are outside of your knowledge_base):
   "I'm sorry, I can only answer questions related to Internetworks based
   on the information I have."
 
